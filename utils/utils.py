@@ -1,12 +1,12 @@
 """This module contains simple helper functions """
-from __future__ import print_function
-import torch
-import numpy as np
-from PIL import Image
+import importlib
 import os
 import pickle
-import importlib
 from collections import defaultdict
+
+import numpy as np
+import torch
+from PIL import Image
 
 
 def tensor2im(tensor):
@@ -127,7 +127,7 @@ def chunk_batch(func, chunk_size, *args, **kwargs):
     out = defaultdict(list)
     out_dict = False
     for i in range(0, B, chunk_size):
-        out_chunk = func(*[arg[i:i+chunk_size] if isinstance(arg, torch.Tensor) else arg for arg in args], **kwargs)
+        out_chunk = func(*[arg[i:i + chunk_size] if isinstance(arg, torch.Tensor) else arg for arg in args], **kwargs)
         if isinstance(out_chunk, torch.Tensor):
             out_chunk = {0: out_chunk}
             out_dict = False
@@ -138,7 +138,7 @@ def chunk_batch(func, chunk_size, *args, **kwargs):
             exit(1)
         for k, v in out_chunk.items():
             out[k].append(v)
-    
+
     out = {k: torch.cat(v, dim=0) for k, v in out.items()}
     return out if out_dict else out[0]
 
@@ -156,11 +156,12 @@ def find_class_using_name(module_name, class_name, suffix='', type=object):
     target_class_name = class_name.replace('_', '') + suffix
     for name, cls in lib.__dict__.items():
         if name.lower() == target_class_name.lower() \
-           and issubclass(cls, type):
+                and issubclass(cls, type):
             target = cls
 
     if target is None:
-        print(f"In {filename}.py, there should be a subclass of {type} with class name that matches {target_class_name} in lowercase.")
+        print(
+            f"In {filename}.py, there should be a subclass of {type} with class name that matches {target_class_name} in lowercase.")
         exit(0)
 
     return target

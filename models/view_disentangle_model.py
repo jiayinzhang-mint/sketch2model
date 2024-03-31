@@ -1,24 +1,19 @@
 import os
-import cv2
-import numpy as np
 
-import torch
-import torch.nn as nn
-from torch.nn import init
-import torch.nn.functional as F
+import cv2
+import soft_renderer.functional as srf
+import torchvision
+import trimesh
 from torch.autograd import Function
 from torch.nn.modules.loss import MSELoss
-import torchvision
+from torchvision.models import ResNet18_Weights
 from tqdm import tqdm
 
-import soft_renderer as sr
-import soft_renderer.functional as srf
-
-
-from .base_model import BaseModel
-from .networks import init_net
-from .criterions import *
 from utils.utils import tensor2im
+from .base_model import BaseModel
+from .criterions import *
+from .networks import init_net
+
 
 class gradient_reversal(Function):
     """
@@ -27,6 +22,7 @@ class gradient_reversal(Function):
     Forward pass is the identity function. In the backward pass,
     the upstream gradients are multiplied by -lambda (i.e. gradient is reversed)
     """
+
     @staticmethod
     def forward(ctx, x, lambda_):
         ctx.lambda_ = lambda_
@@ -52,9 +48,9 @@ class GradientReversalLayer(nn.Module):
 class ResNet18Encoder(nn.Module):
     def __init__(self, dim_in, pretrained):
         super(ResNet18Encoder, self).__init__()
-        assert(dim_in == 3)
+        assert (dim_in == 3)
         print('ResNet18 pretrained:', pretrained)
-        self.backbone = torchvision.models.resnet18(pretrained=pretrained)
+        self.backbone = torchvision.models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
         self.backbone.avgpool = nn.Identity()
         self.backbone.fc = nn.Identity()
         self.x = {}
@@ -69,7 +65,7 @@ class ResNet18Encoder(nn.Module):
         x1 = self.backbone.layer1(x0)
         x2 = self.backbone.layer2(x1)
         x3 = self.backbone.layer3(x2)
-        x4 = self.backbone.layer4(x3)  
+        x4 = self.backbone.layer4(x3)
 
         self.x[0], self.x[1], self.x[2], self.x[3], self.x[4] = x0, x1, x2, x3, x4
 
@@ -147,9 +143,9 @@ class Decoder(nn.Module):
         return x
 
 
-
 class MeshDecoder(nn.Module):
     """This MeshDecoder follows N3MR and SoftRas"""
+
     def __init__(self, filename_obj, dim_in, centroid_scale=0.1, bias_scale=1.0):
         super(MeshDecoder, self).__init__()
         self.template_mesh = sr.Mesh.from_obj(filename_obj)
@@ -163,11 +159,11 @@ class MeshDecoder(nn.Module):
         self.obj_scale = 0.5
 
         dim = 1024
-        dim_hidden = [dim, dim*2]
+        dim_hidden = [dim, dim * 2]
         self.fc1 = nn.Linear(dim_in, dim_hidden[0])
         self.fc2 = nn.Linear(dim_hidden[0], dim_hidden[1])
         self.fc_centroid = nn.Linear(dim_hidden[1], 3)
-        self.fc_bias = nn.Linear(dim_hidden[1], self.nv*3)
+        self.fc_bias = nn.Linear(dim_hidden[1], self.nv * 3)
 
     def forward(self, x):
         batch_size = x.shape[0]
@@ -202,6 +198,7 @@ class Normalize(nn.Module):
     def __init__(self, dim):
         super(Normalize, self).__init__()
         self.dim = dim
+
     def forward(self, x):
         return F.normalize(x, dim=self.dim)
 
@@ -213,7 +210,7 @@ class ViewDisentangleNetwork(nn.Module):
         self.feature_extractor = ResNet18Encoder(dim_in=opt.dim_in, pretrained=True)
         self.encoder = Encoder(dim_in=512 * 7 * 7, dim_hidden=2048, dim_s=1024, dim_v=opt.view_dim, normalize=True)
         self.view_encoder = ViewEncoder(dim_hidden=opt.view_dim, dim_out=opt.view_dim, normalize=True)
-        self.view_decoder = ViewDecoder(dim_in=opt.view_dim, dim_hidden=opt.view_dim//2)
+        self.view_decoder = ViewDecoder(dim_in=opt.view_dim, dim_hidden=opt.view_dim // 2)
         self.decoder = Decoder(dim_in=1024, dim_shape=512, dim_view=opt.view_dim, dim_hidden=1024, normalize=True)
 
         self.shape_discriminator = nn.Sequential(
@@ -230,13 +227,13 @@ class ViewDisentangleNetwork(nn.Module):
             nn.Linear(256, 1)
         )
 
-        self.mesh_decoder = MeshDecoder(opt.template_path, dim_in=512)  
+        self.mesh_decoder = MeshDecoder(opt.template_path, dim_in=512)
 
     def forward(self, image, view=None, view_rand=None):
         N = image.shape[0]
         if view is None and view_rand is None:
             """Inference"""
-            ft = self.feature_extractor(image[:,:self.opt.dim_in])
+            ft = self.feature_extractor(image[:, :self.opt.dim_in])
             zs, zv_pred = self.encoder(ft)
             view_pred = self.view_decoder(zv_pred)
             zv_recon = self.view_encoder(view_pred)
@@ -249,13 +246,13 @@ class ViewDisentangleNetwork(nn.Module):
             }
         else:
             """Training / Validation / Testing"""
-            ft = self.feature_extractor(image[:,:self.opt.dim_in])
+            ft = self.feature_extractor(image[:, :self.opt.dim_in])
             zs, zv_pred = self.encoder(ft)
             view_pred = self.view_decoder(zv_pred)
             zv_recon = self.view_encoder(view_pred)
             zv = self.view_encoder(view)
             view_recon = self.view_decoder(zv)
-            z = self.decoder(zs, zv) # teacher forcing
+            z = self.decoder(zs, zv)  # teacher forcing
             z_pred = self.decoder(zs, zv_recon)
             vertices, faces = self.mesh_decoder(z)
             vertices_pred, faces_pred = self.mesh_decoder(z_pred)
@@ -272,7 +269,7 @@ class ViewDisentangleNetwork(nn.Module):
                 'zv_recon': zv_recon,
                 'sd_score': sd_score
             }
-            
+
             if view_rand is not None:
                 """Training"""
                 zv_rand = self.view_encoder(view_rand)
@@ -296,14 +293,17 @@ class ViewDisentangleModel(BaseModel):
 
     def __init__(self, opt):
         BaseModel.__init__(self, opt)
-        # specify the training losses you want to print out. The program will call base_model.get_current_losses to plot the losses to the console and save them to the tensorboard.
-        self.train_loss_names = ['tot', 'iou_tot', 'iou_rand_tot', 'laplacian', 'flatten', 'view_pred', 'view_recon', 'zv_recon', 'sd']
+        # specify the training losses you want to print out. The program will call base_model.get_current_losses to
+        # plot the losses to the console and save them to the tensorboard.
+        self.adaptive_weighting: list[int] = []
+        self.train_loss_names = ['tot', 'iou_tot', 'iou_rand_tot', 'laplacian', 'flatten', 'view_pred', 'view_recon',
+                                 'zv_recon', 'sd']
         self.val_loss_names = ['voxel_iou', 'voxel_iou_pred']
         self.test_loss_names = ['voxel_iou', 'voxel_iou_pred']
 
         self.model_names = ['Full']
         self.netFull = init_net(ViewDisentangleNetwork(opt), opt)
-        if self.isTrain:  # only defined during training time
+        if self.is_train:  # only defined during training time
             # define your loss functions. You can use losses provided by torch.nn such as torch.nn.L1Loss.
             self.criterions = {
                 'laplacian': LaplacianLoss(opt),
@@ -328,17 +328,18 @@ class ViewDisentangleModel(BaseModel):
         ]
         self.renderers = [
             sr.SoftRasterizer(
-                image_size=opt.image_size // scale, sigma_val=sigma, aggr_func_rgb='hard', aggr_func_alpha='prod', dist_eps=1e-10
+                image_size=opt.image_size // scale, sigma_val=sigma, aggr_func_rgb='hard', aggr_func_alpha='prod',
+                dist_eps=1e-10
             ) for (scale, sigma) in zip(self.render_scales, self.sigmas)
         ]
 
-    def set_input(self, input):
+    def set_input(self, v):
         """Unpack input data from the dataloader and perform necessary pre-processing steps.
 
         Parameters:
-            input: a dictionary that contains the data itself and its metadata information.
+            v: a dictionary that contains the data itself and its metadata information.
         """
-        for k, v in input.items():
+        for k, v in v.items():
             if isinstance(v, list):
                 """Training"""
                 setattr(self, f"data_{k}_a", v[0].to(self.device))
@@ -346,7 +347,7 @@ class ViewDisentangleModel(BaseModel):
             else:
                 """Validation / Testing / Inference"""
                 setattr(self, f"data_{k}", v.to(self.device))
-    
+
     def update_hyperparameters(self, epoch):
         super().update_hyperparameters(epoch)
         self.adaptive_weighting = [f(epoch) for f in self.adaptive_weighting_func]
@@ -370,18 +371,18 @@ class ViewDisentangleModel(BaseModel):
         Project azimuth angle from [-180, 180] to [0, 1]
         """
         view = view.clone()
-        view[:,0] = (view[:,0] + 20) / 60.
-        view[:,1] = (view[:,1] + 180) / 360.
+        view[:, 0] = (view[:, 0] + 20) / 60.
+        view[:, 1] = (view[:, 1] + 180) / 360.
         return view
 
     def decode_view(self, view):
         """
         Un-project elevation angle from [0, 1] to [-20, 40]
         Un-project azimuth angle from [0, 1] to [-180, 180]
-        """        
+        """
         view = view.clone()
-        view[:,0] = (view[:,0] * 60) - 20.
-        view[:,1] = (view[:,1] * 360) - 180.
+        view[:, 0] = (view[:, 0] * 60) - 20.
+        view[:, 1] = (view[:, 1] * 360) - 180.
         return view
 
     def view2camera(self, view):
@@ -392,9 +393,9 @@ class ViewDisentangleModel(BaseModel):
         N = view.shape[0]
         distance = torch.ones(N, dtype=torch.float32) * 2.
         distance = distance.to(self.device)
-        camera = srf.get_points_from_angles(distance, view[:,0], view[:,1])
-        return camera        
-    
+        camera = srf.get_points_from_angles(distance, view[:, 0], view[:, 1])
+        return camera
+
     def render_silhouette(self, v, f, camera, multiview=False):
         transform = sr.LookAt(viewing_angle=15, eye=camera)
         # only render when w > 0 to save time
@@ -413,7 +414,7 @@ class ViewDisentangleModel(BaseModel):
         view_b = torch.cat([self.data_elevation_b[:, None], self.data_azimuth_b[:, None]], dim=1)
 
         elevation_a_rand, azimuth_a_rand = self.get_random_view(N)
-        elevation_b_rand, azimuth_b_rand = self.get_random_view(N)    
+        elevation_b_rand, azimuth_b_rand = self.get_random_view(N)
 
         view_a_rand = torch.cat([elevation_a_rand[:, None], azimuth_a_rand[:, None]], dim=1)
         view_b_rand = torch.cat([elevation_b_rand[:, None], azimuth_b_rand[:, None]], dim=1)
@@ -430,7 +431,7 @@ class ViewDisentangleModel(BaseModel):
         out = self.netFull(image_ab, view=view_ab, view_rand=view_ab_rand)
         for k, v in out.items():
             setattr(self, f"out_{k}", v)
-        
+
         self.out_silhouette = self.render_silhouette(
             torch.cat([self.out_vertices, self.out_vertices], dim=0),
             torch.cat([self.out_faces, self.out_faces], dim=0),
@@ -443,7 +444,7 @@ class ViewDisentangleModel(BaseModel):
             camera_ab_rand,
             multiview=False
         )
-    
+
     def forward_test(self):
         """Run forward pass for validation / testing."""
         N = self.data_image.shape[0]
@@ -452,41 +453,45 @@ class ViewDisentangleModel(BaseModel):
         out = self.netFull(self.data_image, view=self.data_view)
         for k, v in out.items():
             setattr(self, f"out_{k}", v)
-        
+
     def forward_inference(self):
         """Run forward pass for inference."""
-        if self.opt.view is None:
-            self.data_view = None
-        else:
-            self.data_view = torch.cat([self.data_elevation[:, None], self.data_azimuth[:, None]], dim=1)
-            self.data_view = self.encode_view(self.data_view)
-        out = self.netFull(self.data_image, view=self.data_view)
+        self.data_view = None
+        out = self.netFull(self.data_image, view=None)
         for k, v in out.items():
             setattr(self, f"out_{k}", v)
 
     def backward(self):
         """Calculate losses, gradients, and update network weights; called in every training iteration"""
-        self.loss_laplacian, self.loss_laplacian_rand = self.criterions['laplacian'](self.out_vertices), self.criterions['laplacian'](self.out_vertices_rand)
-        self.loss_flatten, self.loss_flatten_rand = self.criterions['flatten'](self.out_vertices), self.criterions['flatten'](self.out_vertices_rand)
+        self.loss_laplacian, self.loss_laplacian_rand = self.criterions['laplacian'](self.out_vertices), \
+            self.criterions['laplacian'](self.out_vertices_rand)
+        self.loss_flatten, self.loss_flatten_rand = self.criterions['flatten'](self.out_vertices), self.criterions[
+            'flatten'](self.out_vertices_rand)
         self.loss_view_pred = self.criterions['mse'](self.data_view_ab, self.out_view_pred)
         self.loss_view_recon = self.criterions['mse'](self.data_view_ab, self.out_view_recon)
         self.loss_zv_recon = self.criterions['mse'](self.out_zv_pred, self.out_zv_recon)
         self.loss_iou = [
             self.criterions['multiview-iou'](
                 sil,
-                F.interpolate(self.data_image_a, (self.opt.image_size//scale, self.opt.image_size//scale), mode='nearest'),
-                F.interpolate(self.data_image_b, (self.opt.image_size//scale, self.opt.image_size//scale), mode='nearest')
-            ) * w if w > 0 else 0 for sil, w, scale in zip(self.out_silhouette, self.adaptive_weighting, self.render_scales)
+                F.interpolate(self.data_image_a, (self.opt.image_size // scale, self.opt.image_size // scale),
+                              mode='nearest'),
+                F.interpolate(self.data_image_b, (self.opt.image_size // scale, self.opt.image_size // scale),
+                              mode='nearest')
+            ) * w if w > 0 else 0 for sil, w, scale in
+            zip(self.out_silhouette, self.adaptive_weighting, self.render_scales)
         ]
         self.loss_iou_tot = sum(self.loss_iou)
         self.loss_iou_rand = [
             self.criterions['iou'](
                 sil,
                 torch.cat([
-                    F.interpolate(self.data_image_a, (self.opt.image_size//scale, self.opt.image_size//scale), mode='nearest'),
-                    F.interpolate(self.data_image_b, (self.opt.image_size//scale, self.opt.image_size//scale), mode='nearest')
+                    F.interpolate(self.data_image_a, (self.opt.image_size // scale, self.opt.image_size // scale),
+                                  mode='nearest'),
+                    F.interpolate(self.data_image_b, (self.opt.image_size // scale, self.opt.image_size // scale),
+                                  mode='nearest')
                 ], dim=0)
-            ) * w if w > 0 else 0 for sil, w, scale in zip(self.out_silhouette_rand, self.adaptive_weighting, self.render_scales)
+            ) * w if w > 0 else 0 for sil, w, scale in
+            zip(self.out_silhouette_rand, self.adaptive_weighting, self.render_scales)
         ]
         self.loss_iou_rand_tot = sum(self.loss_iou_rand)
 
@@ -495,22 +500,22 @@ class ViewDisentangleModel(BaseModel):
         self.loss_sd = self.loss_sd_real + self.loss_sd_fake
 
         self.loss_tot = self.loss_iou_tot + self.opt.lambda_iou_rand * self.loss_iou_rand_tot + \
-            self.opt.lambda_laplacian * (self.loss_laplacian + self.loss_laplacian_rand) + \
-            self.opt.lambda_flatten * (self.loss_flatten + self.loss_flatten_rand) + \
-            self.opt.lambda_view_pred * self.loss_view_pred + \
-            self.opt.lambda_view_recon * self.loss_view_recon + \
-            self.opt.lambda_zv_recon * self.loss_zv_recon + \
-            self.opt.lambda_sd * self.loss_sd
+                        self.opt.lambda_laplacian * (self.loss_laplacian + self.loss_laplacian_rand) + \
+                        self.opt.lambda_flatten * (self.loss_flatten + self.loss_flatten_rand) + \
+                        self.opt.lambda_view_pred * self.loss_view_pred + \
+                        self.opt.lambda_view_recon * self.loss_view_recon + \
+                        self.opt.lambda_zv_recon * self.loss_zv_recon + \
+                        self.opt.lambda_sd * self.loss_sd
 
         self.loss_tot.backward()
 
     def optimize_parameters(self):
         """Update network weights; it will be called in every training iteration."""
-        self.forward()               # first call forward to calculate intermediate results
-        self.optimizer.zero_grad()   # clear network G's existing gradients
-        self.backward()              # calculate gradients for network G
-        self.optimizer.step()        # update gradients for network G
-    
+        self.forward()  # first call forward to calculate intermediate results
+        self.optimizer.zero_grad()  # clear network G's existing gradients
+        self.backward()  # calculate gradients for network G
+        self.optimizer.step()  # update gradients for network G
+
     def visualize_train(self, it):
         """Save generated meshes every opt.vis_freq training steps."""
         vis_save_dir = os.path.join(self.save_dir, 'train')
@@ -519,12 +524,15 @@ class ViewDisentangleModel(BaseModel):
         view_pred = self.decode_view(self.out_view_pred)
         view_rand = self.decode_view(self.data_view_ab_rand)
         image = self.data_image_ab[0]
-        vt, f, vt_pred, f_pred, vt_rand, f_rand = self.out_vertices[0], self.out_faces[0], self.out_vertices_pred[0], self.out_faces_pred[0], self.out_vertices_rand[0], self.out_faces_rand[0]
+        vt, f, vt_pred, f_pred, vt_rand, f_rand = self.out_vertices[0], self.out_faces[0], self.out_vertices_pred[0], \
+            self.out_faces_pred[0], self.out_vertices_rand[0], self.out_faces_rand[0]
         v, v_pred, v_rand = view[0], view_pred[0], view_rand[0]
-        cv2.imwrite(os.path.join(vis_save_dir, f'{it:05d}_input.png'), tensor2im(image)[...,:3])
+        cv2.imwrite(os.path.join(vis_save_dir, f'{it:05d}_input.png'), tensor2im(image)[..., :3])
         srf.save_obj(os.path.join(vis_save_dir, f'{it:05d}_e{int(v[0])}a{int(v[1])}.obj'), vt, f)
-        srf.save_obj(os.path.join(vis_save_dir, f'{it:05d}_pred_e{int(v_pred[0])}a{int(v_pred[1])}.obj'), vt_pred, f_pred)
-        srf.save_obj(os.path.join(vis_save_dir, f'{it:05d}_rand_e{int(v_rand[0])}a{int(v_rand[1])}.obj'), vt_rand, f_rand)
+        srf.save_obj(os.path.join(vis_save_dir, f'{it:05d}_pred_e{int(v_pred[0])}a{int(v_pred[1])}.obj'), vt_pred,
+                     f_pred)
+        srf.save_obj(os.path.join(vis_save_dir, f'{it:05d}_rand_e{int(v_rand[0])}a{int(v_rand[1])}.obj'), vt_rand,
+                     f_rand)
 
     def validate(self, epoch, dataset, phase='val', save_dir=None):
         """Validation procedure. Called every opt.val_epoch_freq epochs."""
@@ -535,9 +543,9 @@ class ViewDisentangleModel(BaseModel):
             self.forward_test()
             voxel_gt = self.data_voxel.cpu().numpy()
             faces = srf.face_vertices(self.out_vertices, self.out_faces) * 31. / 32. + 0.5
-            voxel = srf.voxelization(faces, 32, False).cpu().numpy().transpose(0, 2, 1, 3)[...,::-1]
+            voxel = srf.voxelization(faces, 32, False).cpu().numpy().transpose(0, 2, 1, 3)[..., ::-1]
             faces_pred = srf.face_vertices(self.out_vertices_pred, self.out_faces_pred) * 31. / 32. + 0.5
-            voxel_pred = srf.voxelization(faces_pred, 32, False).cpu().numpy().transpose(0, 2, 1, 3)[...,::-1]
+            voxel_pred = srf.voxelization(faces_pred, 32, False).cpu().numpy().transpose(0, 2, 1, 3)[..., ::-1]
             iou, iou_pred = voxel_iou(voxel, voxel_gt), voxel_iou(voxel_pred, voxel_gt)
             iou_tot += iou * self.data_image.shape[0]
             iou_pred_tot += iou_pred * self.data_image.shape[0]
@@ -549,11 +557,13 @@ class ViewDisentangleModel(BaseModel):
                 view = self.decode_view(self.data_view)
                 view_pred = self.decode_view(self.out_view_pred)
                 image = self.data_image[0]
-                vt, f, vt_pred, f_pred = self.out_vertices[0], self.out_faces[0], self.out_vertices_pred[0], self.out_faces_pred[0]
+                vt, f, vt_pred, f_pred = self.out_vertices[0], self.out_faces[0], self.out_vertices_pred[0], \
+                    self.out_faces_pred[0]
                 v, v_pred = view[0], view_pred[0]
-                cv2.imwrite(os.path.join(vis_save_dir, f'{i:02d}_input.png'), tensor2im(image)[...,:3])
+                cv2.imwrite(os.path.join(vis_save_dir, f'{i:02d}_input.png'), tensor2im(image)[..., :3])
                 srf.save_obj(os.path.join(vis_save_dir, f'{i:02d}_e{int(v[0])}a{int(v[1])}.obj'), vt, f)
-                srf.save_obj(os.path.join(vis_save_dir, f'{i:02d}_pred_e{int(v_pred[0])}a{int(v_pred[1])}.obj'), vt_pred, f_pred)
+                srf.save_obj(os.path.join(vis_save_dir, f'{i:02d}_pred_e{int(v_pred[0])}a{int(v_pred[1])}.obj'),
+                             vt_pred, f_pred)
 
         self.loss_voxel_iou, self.loss_voxel_iou_pred = iou_tot / count, iou_pred_tot / count
 
@@ -567,14 +577,17 @@ class ViewDisentangleModel(BaseModel):
         self.set_input(data)
         self.forward_inference()
         image = self.data_image[0]
-        cv2.imwrite(os.path.join(save_dir, f'input.png'), tensor2im(image)[...,:3])
-        if self.opt.view is None:
-            v_pred = self.decode_view(self.out_view_pred)[0]
-            vt, f = self.out_vertices[0], self.out_faces[0]
-            srf.save_obj(os.path.join(save_dir, f'pred-view_e{int(v_pred[0])}a{int(v_pred[1])}.obj'), vt, f)
-        else:
-            v = self.decode_view(self.data_view)[0]
-            v_pred = self.decode_view(self.out_view_pred)[0]
-            vt, f, vt_pred, f_pred = self.out_vertices[0], self.out_faces[0], self.out_vertices_pred[0], self.out_faces_pred[0]
-            srf.save_obj(os.path.join(save_dir, f'given-view_e{int(v[0])}a{int(v[1])}.obj'), vt, f)
-            srf.save_obj(os.path.join(save_dir, f'pred-view_e{int(v_pred[0])}a{int(v_pred[1])}.obj'), vt_pred, f_pred)
+        cv2.imwrite(os.path.join(save_dir, f'input.png'), tensor2im(image)[..., :3])
+
+        vt = self.out_vertices[0].cpu()
+        f = self.out_faces[0].cpu()
+        mesh = trimesh.Trimesh(vertices=vt, faces=f)
+
+        new_mesh: trimesh.Trimesh = trimesh.intersections.slice_mesh_plane(mesh, [1, 0, 0], [0, 0, 0])
+        new_mesh.remove_unreferenced_vertices()
+        new_mesh.remove_degenerate_faces()
+        new_mesh.remove_duplicate_faces()
+        new_mesh = new_mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 0, 1]))
+
+        v_pred = self.decode_view(self.out_view_pred)[0]
+        new_mesh.export(os.path.join(save_dir, f'pred-view_e{int(v_pred[0])}a{int(v_pred[1])}.obj'))

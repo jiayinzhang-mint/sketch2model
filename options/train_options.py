@@ -7,6 +7,9 @@ class TrainOptions(BaseOptions):
     It also includes shared options defined in BaseOptions.
     """
 
+    def __init__(self):
+        super().__init__()
+
     def initialize(self, parser):
         parser = BaseOptions.initialize(self, parser)
         parser.set_defaults(phase='train')
@@ -48,5 +51,5 @@ class TrainOptions(BaseOptions):
         parser.add_argument('--lr_decay_epochs', type=int, default=800, help='multiply by a gamma every lr_decay_epochs epochs, used in step')
         parser.add_argument('--lr_decay_gamma', type=float, default=0.3, help='multiply by a gamma every lr_decay_epochs epochs, used in step')
 
-        self.isTrain, self.isTest, self.isInfer = True, False, False
+        self.is_train, self.is_test, self.is_infer = True, False, False
         return parser

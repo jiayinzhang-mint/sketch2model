@@ -1,9 +1,12 @@
+import glob
 import os
 import re
-import glob
-import torch
-from collections import OrderedDict
 from abc import ABC, abstractmethod
+from collections import OrderedDict
+from pathlib import Path
+
+import torch
+
 from options import Configurable
 from . import networks
 
@@ -13,10 +16,12 @@ class BaseModel(ABC, Configurable):
     """
 
     def __init__(self, opt):
+        self.optimization = False
+        self.schedulers = []
         self.opt = opt
-        self.isTrain, self.isTest, self.isInfer = opt.isTrain, opt.isTest, opt.isInfer
+        self.is_train, self.is_test, self.is_infer = opt.is_train, opt.is_test, opt.is_infer
         self.device = opt.device
-        self.save_dir = os.path.join(opt.checkpoints_dir, opt.name)
+        self.save_dir = Path(opt.checkpoints_dir).joinpath(opt.name)
 
         # losses
         self.train_loss_names = []
@@ -54,22 +59,26 @@ class BaseModel(ABC, Configurable):
         Parameters:
             opt (Option class) -- stores all the experiment flags; needs to be a subclass of BaseOptions
         """
-        
+
         current_epoch = 0
 
-        if self.isTrain and opt.init_weights:
-            init_weights_name, init_weights_epoch = ':'.join(opt.init_weights.split(':')[:-1]), opt.init_weights.split(':')[-1]
+        if self.is_train and opt.init_weights:
+            init_weights_name, init_weights_epoch = ':'.join(opt.init_weights.split(':')[:-1]), \
+                opt.init_weights.split(':')[-1]
             self.load_networks(init_weights_name, init_weights_epoch, opt.init_weights_keys)
-        
-        if not self.isTrain or opt.continue_train:
+
+        if not self.is_train or opt.continue_train:
             if opt.load_epoch == 'latest':
-                current_epoch = max([int(os.path.basename(x).split('_')[0]) for x in glob.glob(os.path.join(self.save_dir, '*.pth')) if 'latest' not in x])
+                current_epoch = max(
+                    [int(os.path.basename(x).split('_')[0]) for x in
+                     glob.glob(self.save_dir.joinpath("*.pth").__str__()) if
+                     'latest' not in x])
                 opt.load_epoch = current_epoch
             else:
                 current_epoch = int(opt.load_epoch)
             self.load_networks(opt.name, opt.load_epoch)
 
-        if self.isTrain and opt.fix_layers:
+        if self.is_train and opt.fix_layers:
             for name in self.model_names:
                 net = getattr(self, 'net' + name)
                 if isinstance(net, torch.nn.DataParallel):
@@ -78,8 +87,9 @@ class BaseModel(ABC, Configurable):
                     if re.match(opt.fix_layers, param_name):
                         params.requires_grad = False
 
-        if self.isTrain:
-            self.schedulers = [networks.get_scheduler(optimizer, opt, last_epoch=current_epoch - 1) for optimizer in self.optimizers]
+        if self.is_train:
+            self.schedulers = [networks.get_scheduler(optimizer, opt, last_epoch=current_epoch - 1) for optimizer in
+                               self.optimizers]
 
         self.print_networks(opt.verbose)
         return current_epoch
@@ -102,7 +112,7 @@ class BaseModel(ABC, Configurable):
 
     @abstractmethod
     def validate(self):
-        """Function for validation procedure."""        
+        """Function for validation procedure."""
         pass
 
     @abstractmethod
@@ -114,7 +124,7 @@ class BaseModel(ABC, Configurable):
     def inference(self):
         """Function for inference procedure."""
         pass
-    
+
     @abstractmethod
     def update_hyperparameters(self, epoch):
         """
@@ -122,13 +132,13 @@ class BaseModel(ABC, Configurable):
         Called before each epoch.
         """
         pass
-    
+
     @abstractmethod
     def update_hyperparameters_step(self, step):
         """
         Define how hyperparameters are updated.
         Called before each step.
-        """        
+        """
         pass
 
     def update_learning_rate(self):
@@ -137,7 +147,7 @@ class BaseModel(ABC, Configurable):
         for scheduler in self.schedulers:
             scheduler.step()
         lr = self.optimizers[0].param_groups[0]['lr']
-    
+
     def get_learning_rate(self):
         lr = self.optimizers[0].param_groups[0]['lr']
         return lr
@@ -155,7 +165,8 @@ class BaseModel(ABC, Configurable):
         errors_ret = OrderedDict()
         for name in getattr(self, f"{mode}_loss_names"):
             if isinstance(name, str) and hasattr(self, 'loss_' + name):
-                errors_ret[name] = float(getattr(self, 'loss_' + name))  # float(...) works for both scalar tensor and float number
+                errors_ret[name] = float(
+                    getattr(self, 'loss_' + name))  # float(...) works for both scalar tensor and float number
         return errors_ret
 
     def save_networks(self, epoch):
@@ -167,7 +178,7 @@ class BaseModel(ABC, Configurable):
         for name in self.model_names:
             if isinstance(name, str):
                 save_filename = '%s_net_%s.pth' % (epoch, name)
-                save_path = os.path.join(self.save_dir, save_filename)
+                save_path = self.save_dir.joinpath(save_filename)
                 net = getattr(self, 'net' + name)
 
                 if isinstance(net, torch.nn.DataParallel):
@@ -186,7 +197,7 @@ class BaseModel(ABC, Configurable):
         for name in self.model_names:
             if isinstance(name, str):
                 load_filename = '%s_net_%s.pth' % (epoch, name)
-                load_path = os.path.join(self.opt.checkpoints_dir, exp_name, load_filename)
+                load_path = Path(self.opt.checkpoints_dir).joinpath(exp_name, load_filename)
                 net = getattr(self, 'net' + name)
                 if isinstance(net, torch.nn.DataParallel):
                     net = net.module
@@ -195,7 +206,8 @@ class BaseModel(ABC, Configurable):
                     state_dict = torch.load(load_path, map_location=self.device)
                     net.load_state_dict(state_dict, strict=False)
                 else:
-                    state_dict = {k: v for k, v in torch.load(load_path, map_location=self.device).items() if re.match(keys, k)}
+                    state_dict = {k: v for k, v in torch.load(load_path, map_location=self.device).items() if
+                                  re.match(keys, k)}
                     net.load_state_dict(state_dict, strict=False)
 
     def print_networks(self, verbose):
